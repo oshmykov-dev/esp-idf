@@ -1,5 +1,5 @@
 /*
- * SPDX-FileCopyrightText: 2021-2023 Espressif Systems (Shanghai) CO LTD
+ * SPDX-FileCopyrightText: 2021-2024 Espressif Systems (Shanghai) CO LTD
  *
  * SPDX-License-Identifier: CC0-1.0
  */
@@ -18,7 +18,7 @@
 #include "esp_log.h"
 #include "lvgl.h"
 #include "sdkconfig.h"
-#include "driver/i2c_master.h"
+#include "driver/i2c.h"
 
 #if CONFIG_EXAMPLE_LCD_CONTROLLER_ILI9341
 #include "esp_lcd_ili9341.h"
@@ -44,13 +44,13 @@ static const char *TAG = "example";
 #define EXAMPLE_LCD_PIXEL_CLOCK_HZ     (20 * 1000 * 1000)
 #define EXAMPLE_LCD_BK_LIGHT_ON_LEVEL  1
 #define EXAMPLE_LCD_BK_LIGHT_OFF_LEVEL !EXAMPLE_LCD_BK_LIGHT_ON_LEVEL
-#define EXAMPLE_PIN_NUM_SCLK           10 // was 18
-#define EXAMPLE_PIN_NUM_MOSI           11 // was 19
-#define EXAMPLE_PIN_NUM_MISO           12 // was 21
+#define EXAMPLE_PIN_NUM_SCLK           10
+#define EXAMPLE_PIN_NUM_MOSI           11
+#define EXAMPLE_PIN_NUM_MISO           12
 
-#define EXAMPLE_PIN_NUM_LCD_DC         8 // was 5
-#define EXAMPLE_PIN_NUM_LCD_RST        14 // was 3
-#define EXAMPLE_PIN_NUM_LCD_CS         9 // was 4
+#define EXAMPLE_PIN_NUM_LCD_DC         8
+#define EXAMPLE_PIN_NUM_LCD_RST        14
+#define EXAMPLE_PIN_NUM_LCD_CS         9
 
 #define EXAMPLE_PIN_NUM_BK_LIGHT       2
 #define EXAMPLE_PIN_NUM_TOUCH_CS       -1
@@ -160,7 +160,7 @@ static void example_lvgl_port_update_callback(lv_disp_drv_t *drv)
 }
 
 #if CONFIG_EXAMPLE_LCD_TOUCH_ENABLED
-#if CONFIG_EXAMPLE_LCD_TOUCH_CONTROLLER_STMPE610
+#if CONFIG_EXAMPLE_LCD_TOUCH_CONTROLLER_STMPE610 || CONFIG_EXAMPLE_LCD_TOUCH_CONTROLLER_CST816S
 static void example_lvgl_touch_cb(lv_indev_drv_t * drv, lv_indev_data_t * data)
 {
     uint16_t touchpad_x[1] = {0};
@@ -181,7 +181,8 @@ static void example_lvgl_touch_cb(lv_indev_drv_t * drv, lv_indev_data_t * data)
         data->state = LV_INDEV_STATE_RELEASED;
     }
 }
-#elif CONFIG_EXAMPLE_LCD_TOUCH_CONTROLLER_CST816S
+#endif
+#if CONFIG_EXAMPLE_LCD_TOUCH_CONTROLLER_CST816S
 /*
     Define a callback function used by ISR.
 */
@@ -195,72 +196,19 @@ static void touch_callback(esp_lcd_touch_handle_t tp)
     }
 }
 
-static void example_touch_task(void *arg)
-{
-    ESP_LOGI(TAG, "Starting touch task");
-    uint32_t task_delay_ms = EXAMPLE_LVGL_TASK_MAX_DELAY_MS;
-    while (1) {
-        // Read data from the touch controller and store it in RAM memory. It should be called regularly in poll.
-        if (xSemaphoreTake(touch_mux, 0) == pdTRUE) {
-            esp_lcd_touch_read_data(tp); // read only when ISR was triggled
-
-            // Get one X and Y coordinates with strength of touch.
-
-            uint16_t touch_x[1];
-            uint16_t touch_y[1];
-            uint16_t touch_strength[1];
-            uint8_t touch_cnt = 0;
-            bool touchpad_pressed = esp_lcd_touch_get_coordinates(tp, touch_x, touch_y, touch_strength, &touch_cnt, 1);
-            ESP_LOGI(TAG, "touch pressed = %d , x = %u , y=%u", touchpad_pressed, touch_x[0], touch_y[0]);
-        }        
-        
-        vTaskDelay(pdMS_TO_TICKS(task_delay_ms));
-    }
-}
-
 void i2c_init(void)
 {
-    /*
     const i2c_config_t i2c_conf = {
         .mode = I2C_MODE_MASTER,
-        .sda_io_num = CONFIG_DISPLAY_CST816S_SDA,
+        .sda_io_num = 6,
         .sda_pullup_en = GPIO_PULLUP_ENABLE,
-        .scl_io_num = CONFIG_DISPLAY_CST816S_SCL,
+        .scl_io_num = 7,
         .scl_pullup_en = GPIO_PULLUP_ENABLE,
         .master.clk_speed = 400000
     };
     i2c_param_config(0, &i2c_conf);
     i2c_driver_install(0, i2c_conf.mode, 0, 0, 0);
-    */
 }
-
-/*
-void i2c_init2(void)
-{
-    const i2c_master_bus_config_t i2c_bus_config = {
-        .clk_source = I2C_CLK_SRC_DEFAULT,
-        .i2c_port = PORT_NUMBER,
-        .scl_io_num = CONFIG_DISPLAY_CST816S_SCL,
-        .sda_io_num = CONFIG_DISPLAY_CST816S_SDA,
-        .flags.enable_internal_pullup = 1,
-    };
-
-    i2c_master_bus_handle_t bus_handle;
-    ESP_ERROR_CHECK(i2c_new_master_bus(&i2c_bus_config, &bus_handle));
-
-    esp_lcd_panel_io_handle_t io_handle = NULL;
-
-    esp_lcd_panel_io_i2c_config_t io_config = {
-        .dev_addr = CONFIG_DISPLAY_SSD1306_I2C_HW_ADDR,
-        .control_phase_bytes = 1,
-        .lcd_cmd_bits = DISPLAY_CMD_BITS,
-        .lcd_param_bits = DISPLAY_PARAM_BITS,
-        .dc_bit_offset = 6,
-    };
-
-    ESP_ERROR_CHECK(esp_lcd_new_panel_io_i2c(bus_handle, &io_config, &io_handle));
-}
-*/
 #endif
 #endif
 
@@ -313,6 +261,31 @@ void app_main(void)
     // Define a mutex for the touch and create it before initialize the touch:
     touch_mux = xSemaphoreCreateBinary();
     assert(touch_mux);  
+
+    i2c_init();
+
+    esp_lcd_panel_io_i2c_config_t tp_io_config = ESP_LCD_TOUCH_IO_I2C_CST816S_CONFIG();
+
+    esp_lcd_touch_config_t tp_cfg = {
+        .x_max = 240,
+        .y_max = 240,
+        .rst_gpio_num = 13,
+        .int_gpio_num = 5,
+        .levels = {
+            .reset = 0,
+            .interrupt = 0,
+        },
+        .flags = {
+            .swap_xy = 0,
+            .mirror_x = 0,
+            .mirror_y = 0,
+        },
+        .interrupt_callback = touch_callback,
+    };
+
+    esp_lcd_panel_io_handle_t tp_io_handle = NULL;
+    esp_lcd_new_panel_io_i2c((esp_lcd_i2c_bus_handle_t)0 , &tp_io_config, &tp_io_handle);
+    esp_lcd_touch_new_i2c_cst816s(tp_io_handle, &tp_cfg, &tp);     
 #endif
 #endif
     ESP_LOGI(TAG, "Turn off LCD backlight");
@@ -395,49 +368,6 @@ void app_main(void)
     ESP_LOGI(TAG, "Initialize touch controller STMPE610");
     ESP_ERROR_CHECK(esp_lcd_touch_new_spi_stmpe610(tp_io_handle, &tp_cfg, &tp));    
 #endif // CONFIG_EXAMPLE_LCD_TOUCH_CONTROLLER_STMPE610
-#if CONFIG_EXAMPLE_LCD_TOUCH_CONTROLLER_CST816S
-
-    ESP_LOGI(TAG, "Initialize I2C bus");
-    i2c_master_bus_handle_t i2c_bus = NULL;
-    i2c_master_bus_config_t bus_config = {
-        .clk_source = I2C_CLK_SRC_DEFAULT,
-        .glitch_ignore_cnt = 7,
-        .i2c_port = I2C_NUM_0,
-        .sda_io_num = CONFIG_DISPLAY_CST816S_SDA,
-        .scl_io_num = CONFIG_DISPLAY_CST816S_SCL,
-        .flags.enable_internal_pullup = true,
-    };
-    ESP_ERROR_CHECK(i2c_new_master_bus(&bus_config, &i2c_bus));
-
-    // Initialization of the touch component.
-    esp_lcd_panel_io_i2c_config_t tp_io_config = ESP_LCD_TOUCH_IO_I2C_CST816S_CONFIG();
-    tp_io_config.scl_speed_hz = 1 * 1000 * 1000;
-
-    ESP_ERROR_CHECK(esp_lcd_new_panel_io_i2c(i2c_bus, &tp_io_config, &io_handle));
-
-    // E (324) i2c: CONFLICT! driver_ng is not allowed to be used with this old driver
-
-    esp_lcd_touch_config_t tp_cfg = {
-        .x_max = EXAMPLE_LCD_H_RES,
-        .y_max = EXAMPLE_LCD_V_RES,
-        .rst_gpio_num = CONFIG_LCD_TOUCH_RST,
-        .int_gpio_num = CONFIG_LCD_TOUCH_INT,
-        .levels = {
-            .reset = 0,
-            .interrupt = 0,
-        },
-        .flags = {
-            .swap_xy = 0,
-            .mirror_x = 0,
-            .mirror_y = 0,
-        },
-        .interrupt_callback = touch_callback,
-    };
-    
-    ESP_LOGI(TAG, "Initialize touch controller CST816S");
-    ESP_ERROR_CHECK(esp_lcd_touch_new_i2c_cst816s(io_handle, &tp_cfg, &tp));
-
-#endif // CONFIG_EXAMPLE_LCD_TOUCH_CONTROLLER_CST816S
 #endif // CONFIG_EXAMPLE_LCD_TOUCH_ENABLED
 
     ESP_LOGI(TAG, "Turn on LCD backlight");
@@ -475,7 +405,7 @@ void app_main(void)
     ESP_ERROR_CHECK(esp_timer_start_periodic(lvgl_tick_timer, EXAMPLE_LVGL_TICK_PERIOD_MS * 1000));
 
 #if CONFIG_EXAMPLE_LCD_TOUCH_ENABLED
-#if CONFIG_EXAMPLE_LCD_TOUCH_CONTROLLER_STMPE610
+#if CONFIG_EXAMPLE_LCD_TOUCH_CONTROLLER_STMPE610 || CONFIG_EXAMPLE_LCD_TOUCH_CONTROLLER_CST816S
     static lv_indev_drv_t indev_drv;    // Input device driver (Touch)
     lv_indev_drv_init(&indev_drv);
     indev_drv.type = LV_INDEV_TYPE_POINTER;
@@ -498,6 +428,4 @@ void app_main(void)
         // Release the mutex
         example_lvgl_unlock();
     }
-
-    xTaskCreate(example_touch_task, "Touch", EXAMPLE_LVGL_TASK_STACK_SIZE, NULL, 3, NULL);
 }
